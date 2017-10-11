@@ -42,6 +42,7 @@ type SpecInfoGatherer struct {
 	conceptsCache     conceptCache
 	stepsCache        stepsCache
 	paramsCache       paramsCache
+	tagsCache         tagsCache
 	SpecDirs          []string
 }
 
@@ -66,6 +67,11 @@ type paramsCache struct {
 	dynamicParams map[string]map[string]gauge.StepArg
 }
 
+type tagsCache struct {
+	mutex sync.RWMutex
+	tags  map[string][]string
+}
+
 type SpecDetail struct {
 	Spec *gauge.Specification
 	Errs []parser.ParseError
@@ -85,6 +91,17 @@ func (s *SpecInfoGatherer) Init() {
 	s.initSpecsCache()
 	s.initStepsCache()
 	s.initParamsCache()
+	s.initTagsCache()
+}
+func (s *SpecInfoGatherer) initTagsCache() {
+	s.tagsCache.mutex.Lock()
+	defer s.tagsCache.mutex.Unlock()
+	s.specsCache.mutex.Lock()
+	s.tagsCache.tags = make(map[string][]string, 0)
+	for file, specDetail := range s.specsCache.specDetails {
+		s.updateTagsCacheFromSpecs(file, specDetail)
+	}
+	s.specsCache.mutex.Unlock()
 }
 
 func (s *SpecInfoGatherer) initParamsCache() {
@@ -193,6 +210,29 @@ func (s *SpecInfoGatherer) addParamsFromSteps(steps []*gauge.Step, file string) 
 	}
 }
 
+func (s *SpecInfoGatherer) updateTagsCacheFromSpecs(file string, specDetail *SpecDetail) {
+	if specDetail.Spec.Tags != nil {
+		s.tagsCache.tags[file] = specDetail.Spec.Tags.Values()
+	}
+	for _, sce := range specDetail.Spec.Scenarios {
+		if sce.Tags != nil {
+			s.tagsCache.tags[file] = append(s.tagsCache.tags[file], sce.Tags.Values()...)
+		}
+	}
+}
+
+func removeDuplicateTags(tags []string) []string {
+	encountered := map[string]bool{}
+	result := []string{}
+	for i := range tags {
+		if !encountered[tags[i]] {
+			encountered[tags[i]] = true
+			result = append(result, tags[i])
+		}
+	}
+	return result
+}
+
 func (s *SpecInfoGatherer) addToSpecsCache(key string, value *SpecDetail) {
 	s.specsCache.specDetails[key] = value
 }
@@ -289,6 +329,10 @@ func (s *SpecInfoGatherer) OnSpecFileModify(file string) {
 	s.paramsCache.mutex.Lock()
 	defer s.paramsCache.mutex.Unlock()
 	s.updateParamCacheFromSpecs(file, details[0])
+
+	s.tagsCache.mutex.Lock()
+	defer s.tagsCache.mutex.Unlock()
+	s.updateTagsCacheFromSpecs(file, details[0])
 }
 
 func (s *SpecInfoGatherer) OnConceptFileModify(file string) {
@@ -484,6 +528,16 @@ func (s *SpecInfoGatherer) Concepts() []*gauge_messages.ConceptInfo {
 		}
 	}
 	return conceptInfos
+}
+
+func (s *SpecInfoGatherer) Tags() []string {
+	s.tagsCache.mutex.RLock()
+	defer s.tagsCache.mutex.RUnlock()
+	var allTags []string
+	for _, tags := range s.tagsCache.tags {
+		allTags = append(allTags, tags...)
+	}
+	return removeDuplicateTags(allTags)
 }
 
 // SearchConceptDictionary searches for a concept in concept dictionary
